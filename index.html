@@ -32,11 +32,12 @@
   button:disabled { opacity: .45; cursor: not-allowed; }
   .conn { font-size: .9rem; color: var(--muted); }
   .conn.on { color: var(--ok); }
-  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
   .stat { text-align: center; padding: 8px 4px; border: 1px solid var(--line); border-radius: 8px; }
   .stat .v { font-size: 1.25rem; font-weight: 700; font-variant-numeric: tabular-nums; }
   .stat .k { font-size: .78rem; color: var(--muted); }
   .stat.fault .v { color: var(--err); }
+  .field[hidden] { display: none; }
   .field { display: grid; grid-template-columns: 1fr 130px; gap: 4px 12px; align-items: center;
     padding: 10px 0; border-top: 1px solid var(--line); }
   .field:first-of-type { border-top: 0; }
@@ -55,7 +56,6 @@
   .msg.ok { color: var(--ok); } .msg.err { color: var(--err); } .msg.warn { color: var(--warn); }
   .notice { font-size: .85rem; color: var(--warn); }
   @media (max-width: 420px) {
-    .stats { grid-template-columns: repeat(2, 1fr); }
     .field { grid-template-columns: 1fr 110px; }
   }
 </style>
@@ -79,6 +79,7 @@
       <div class="stat"><div class="v" id="sVbat">–</div><div class="k">電池電壓 (V)</div></div>
       <div class="stat"><div class="v" id="sShots">–</div><div class="k">射擊發數</div></div>
       <div class="stat"><div class="v" id="sMode">–</div><div class="k">模式</div></div>
+      <div class="stat" id="lowBox"><div class="v" id="sLow">–</div><div class="k">低電壓保護</div></div>
       <div class="stat" id="faultBox"><div class="v" id="sFault">–</div><div class="k">故障</div></div>
     </div>
     <div class="row" style="margin-top:12px">
@@ -106,6 +107,34 @@
         <div class="hint">升壓：OUT 約 24V，請確認閥門耐壓。電池電壓：約電池電壓減 0.4V。切換會在沒有射擊、扳機放開時生效，開啟升壓後約 0.1 秒才能射擊。</div>
       </div>
       <div class="field">
+        <label for="mode1">單發位置模式</label>
+        <select id="mode1">
+          <option value="semi">單發</option>
+          <option value="binary">雙動</option>
+          <option value="burst">點放</option>
+        </select>
+        <div class="hint">選擇開關在單發位置（IN-B 未接通）時的射擊方式</div>
+      </div>
+      <div class="field burst-1">
+        <label for="burst1">單發位置點放發數</label>
+        <div class="unit"><input id="burst1" type="number" inputmode="numeric" step="1" min="2" max="10"><span>發</span></div>
+        <div class="hint">2 ~ 10</div>
+      </div>
+      <div class="field">
+        <label for="mode2">連發位置模式</label>
+        <select id="mode2">
+          <option value="auto">連發</option>
+          <option value="binary">雙動</option>
+          <option value="burst">點放</option>
+        </select>
+        <div class="hint">選擇開關在連發位置（IN-B 接通）時的射擊方式。雙動：按下一發、放開一發。點放：按下打出指定發數，開始後放開也會打完。</div>
+      </div>
+      <div class="field burst-2">
+        <label for="burst2">連發位置點放發數</label>
+        <div class="unit"><input id="burst2" type="number" inputmode="numeric" step="1" min="2" max="10"><span>發</span></div>
+        <div class="hint">2 ~ 10</div>
+      </div>
+      <div class="field">
         <label for="poppet_open">Poppet 開閥時間</label>
         <div class="unit"><input id="poppet_open" type="number" inputmode="decimal" step="0.1" min="1" max="100"><span>ms</span></div>
         <div class="hint">1 ~ 100 ms</div>
@@ -126,9 +155,14 @@
         <div class="hint">0 ~ 200 ms，nozzle 關閉後到 poppet 開啟的等待，僅雙閥</div>
       </div>
       <div class="field">
-        <label for="rof">連發射速上限</label>
+        <label for="rof">射速上限</label>
         <div class="unit"><input id="rof" type="number" inputmode="numeric" step="1" min="1" max="60"><span>發/秒</span></div>
-        <div class="hint">1 ~ 60</div>
+        <div class="hint">1 ~ 60，限制連發、點放與雙動第二發的速度</div>
+      </div>
+      <div class="field">
+        <label for="lvp">低電壓保護</label>
+        <div class="unit"><input id="lvp" type="number" inputmode="decimal" step="0.1" min="0" max="13"><span>V</span></div>
+        <div class="hint">0 = 關閉；5 ~ 13 V。電池低於此電壓持續 3 秒即停止射擊並關閉升壓，需重新開機或重新寫入參數才解除。2S 鋰電建議 6.4，3S 建議 9.6</div>
       </div>
       <p id="summary" class="summary"></p>
       <div class="row">
@@ -153,9 +187,14 @@ const FIELDS = {
   poppet_close: { min: 1, max: 200, label: "Poppet 閉閥時間" },
   nozzle_open:  { min: 1, max: 100, label: "Nozzle 開閥時間" },
   nozzle_close: { min: 0, max: 200, label: "Nozzle 閉閥時間" },
-  rof:          { min: 1, max: 60, label: "連發射速上限", integer: true },
+  rof:          { min: 1, max: 60, label: "射速上限", integer: true },
+  burst1:       { min: 2, max: 10, label: "單發位置點放發數", integer: true },
+  burst2:       { min: 2, max: 10, label: "連發位置點放發數", integer: true },
+  lvp:          { min: 5, max: 13, label: "低電壓保護", allowZero: true },
 };
-const DEFAULTS = { valves: 1, boost: 1, poppet_open: 10, poppet_close: 10, nozzle_open: 15, nozzle_close: 10, rof: 30 };
+const DEFAULTS = { valves: 1, boost: 1, mode1: "semi", mode2: "auto", burst1: 3, burst2: 3,
+  poppet_open: 10, poppet_close: 10, nozzle_open: 15, nozzle_close: 10, rof: 30, lvp: 6.4 };
+const MODE_NAMES = { semi: "單發", auto: "連發", binary: "雙動", burst: "點放" };
 
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -170,23 +209,37 @@ function parseKv(text) {
   return out;
 }
 
+// 板子上的模式若不在下拉選單中（例如用序列埠設定），臨時加入該選項以免顯示空白。
+function setSelect(id, value) {
+  const el = $(id);
+  if (value === undefined) return;
+  if (![...el.options].some((o) => o.value === value)) el.add(new Option(MODE_NAMES[value] || value, value));
+  el.value = value;
+}
+
 function setMsg(text, kind = "") { const m = $("msg"); m.textContent = text; m.className = "msg " + kind; }
 
 function fillForm(values) {
   $("valves").value = String(values.valves);
   $("boost").value = String(values.boost);
+  for (const id of ["mode1", "mode2"]) setSelect(id, values[id]);
   for (const k of Object.keys(FIELDS)) if (values[k] !== undefined) $(k).value = values[k];
   refreshForm();
 }
 
-// 檢查單一欄位；時間最多 3 位小數，射速為整數。
+// 回傳欄位的錯誤訊息，空字串表示有效；時間最多 3 位小數，射速與發數為整數。
+function fieldError(k) {
+  const f = FIELDS[k], raw = $(k).value.trim();
+  if (raw === "") return "請輸入數值";
+  if (!/^\d+(\.\d{1,3})?$/.test(raw)) return f.integer ? "須為整數" : "須為數字，最多 3 位小數";
+  if (f.integer && raw.includes(".")) return "須為整數";
+  if (f.allowZero && Number(raw) === 0) return "";
+  if (Number(raw) < f.min || Number(raw) > f.max) return f.allowZero ? `須為 0 或 ${f.min} ~ ${f.max}` : `須為 ${f.min} ~ ${f.max}`;
+  return "";
+}
+
 function checkField(k) {
-  const f = FIELDS[k], el = $(k), raw = el.value.trim();
-  let err = "";
-  if (raw === "") err = "請輸入數值";
-  else if (!/^\d+(\.\d{1,3})?$/.test(raw)) err = f.integer ? "須為整數" : "須為數字，最多 3 位小數";
-  else if (f.integer && raw.includes(".")) err = "須為整數";
-  else if (Number(raw) < f.min || Number(raw) > f.max) err = `須為 ${f.min} ~ ${f.max}`;
+  const el = $(k), err = fieldError(k);
   el.classList.toggle("invalid", !!err);
   const field = el.closest(".field");
   let bad = field.querySelector(".bad");
@@ -197,15 +250,25 @@ function checkField(k) {
   return !err;
 }
 
+// 目前設定下用不到的欄位：單閥時的 nozzle、非點放時的點放發數。
+function isInactive(k) {
+  if (k.startsWith("nozzle")) return $("valves").value !== "2";
+  if (k === "burst1") return $("mode1").value !== "burst";
+  if (k === "burst2") return $("mode2").value !== "burst";
+  return false;
+}
+
 function refreshForm() {
   const dual = $("valves").value === "2";
   document.querySelectorAll(".field.nozzle").forEach((f) => {
     f.classList.toggle("disabled", !dual);
     f.querySelector("input").disabled = !dual;
   });
+  document.querySelector(".field.burst-1").hidden = isInactive("burst1");
+  document.querySelector(".field.burst-2").hidden = isInactive("burst2");
   let ok = true;
   for (const k of Object.keys(FIELDS)) {
-    const inactive = !dual && k.startsWith("nozzle");
+    const inactive = isInactive(k);
     if (!inactive && !checkField(k)) ok = false;
     if (inactive) { $(k).classList.remove("invalid"); const b = $(k).closest(".field").querySelector(".bad"); if (b) b.remove(); }
   }
@@ -224,17 +287,31 @@ function refreshForm() {
   return ok;
 }
 
+// 用不到的欄位若填了無效值就不送出，避免韌體整筆拒絕。
 function buildCommand() {
-  const parts = [`valves=${$("valves").value}`, `boost=${$("boost").value}`];
-  for (const k of Object.keys(FIELDS)) parts.push(`${k}=${$(k).value.trim()}`);
+  const parts = ["valves", "boost", "mode1", "mode2"].map((k) => `${k}=${$(k).value}`);
+  for (const k of Object.keys(FIELDS)) {
+    if (isInactive(k) && fieldError(k)) continue;
+    parts.push(`${k}=${$(k).value.trim()}`);
+  }
   return parts.join(";");
+}
+
+// 數字以數值比較（"10" 與 "10.0" 相同），其餘以文字比較。
+function sameValue(a, b) {
+  if (a === undefined) return false;
+  const na = Number(a), nb = Number(b);
+  return a === b || (!Number.isNaN(na) && !Number.isNaN(nb) && na === nb);
 }
 
 function showStatus(text) {
   const s = parseKv(text);
   $("sVbat").textContent = s.vbat === "na" ? "量測中" : (s.vbat ?? "–");
   $("sShots").textContent = s.shots ?? "–";
-  $("sMode").textContent = s.mode === "auto" ? "連發" : s.mode === "semi" ? "單發" : "–";
+  $("sMode").textContent = MODE_NAMES[s.mode] ?? "–";
+  const low = s.lowbat === "1";
+  $("sLow").textContent = s.lowbat === undefined ? "–" : low ? "已鎖定" : "正常";
+  $("lowBox").classList.toggle("fault", low);
   const fault = s.fault === "1";
   $("sFault").textContent = s.fault === undefined ? "–" : fault ? "有" : "無";
   $("faultBox").classList.toggle("fault", fault);
@@ -257,7 +334,7 @@ async function sendCommand(cmd, expect) {
       const text = await readSettings();
       const kv = parseKv(text);
       if (kv.error && text !== before) return { ok: false, error: kv.error, kv };
-      if (!expect || Object.entries(expect).every(([k, v]) => Number(kv[k]) === Number(v))) return { ok: true, kv };
+      if (!expect || Object.entries(expect).every(([k, v]) => sameValue(kv[k], v))) return { ok: true, kv };
     }
     return { ok: false, error: "板子沒有回應，可能正在射擊，請稍後重新讀取確認" };
   } finally {
@@ -311,14 +388,15 @@ async function connect() {
 
 function fromKv(kv) {
   // 舊版韌體沒有 boost 欄位時，視為升壓（舊版固定開啟升壓）。
-  const v = { valves: Number(kv.valves) || 1, boost: kv.boost === "0" ? 0 : 1 };
+  const v = { valves: Number(kv.valves) || 1, boost: kv.boost === "0" ? 0 : 1,
+    mode1: kv.mode1 ?? "semi", mode2: kv.mode2 ?? "auto" };
   for (const k of Object.keys(FIELDS)) if (kv[k] !== undefined) v[k] = kv[k];
   return v;
 }
 
 $("btnConnect").addEventListener("click", connect);
 $("btnDisconnect").addEventListener("click", () => { if (device && device.gatt.connected) device.gatt.disconnect(); });
-$("valves").addEventListener("change", refreshForm);
+for (const id of ["valves", "mode1", "mode2"]) $(id).addEventListener("change", refreshForm);
 for (const k of Object.keys(FIELDS)) $(k).addEventListener("input", refreshForm);
 $("btnDefaults").addEventListener("click", () => { fillForm(DEFAULTS); setMsg("已填入預設值，按「寫入板子」才會生效", "warn"); });
 
