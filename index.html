@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HPA-FCU 參數設定</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #ffffff; --text: #1c1f24; --muted: #6b7280;
+    --line: #e2e5ea; --accent: #2563eb; --accent-text: #ffffff;
+    --ok: #15803d; --err: #b91c1c; --warn: #b45309; --input: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111316; --card: #1b1e23; --text: #e8eaed; --muted: #9aa1ab;
+      --line: #2c3138; --accent: #4f8cff; --accent-text: #0b0d10;
+      --ok: #4ade80; --err: #f87171; --warn: #fbbf24; --input: #14171b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", "Noto Sans TC", sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.3rem; margin: 4px 0 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px; margin-bottom: 14px; }
+  .card h2 { font-size: 1rem; margin: 0 0 12px; color: var(--muted); font-weight: 600; }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--text);
+    border-radius: 8px; padding: 8px 14px; cursor: pointer; min-height: 40px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .conn { font-size: .9rem; color: var(--muted); }
+  .conn.on { color: var(--ok); }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .stat { text-align: center; padding: 8px 4px; border: 1px solid var(--line); border-radius: 8px; }
+  .stat .v { font-size: 1.25rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat .k { font-size: .78rem; color: var(--muted); }
+  .stat.fault .v { color: var(--err); }
+  .field { display: grid; grid-template-columns: 1fr 130px; gap: 4px 12px; align-items: center;
+    padding: 10px 0; border-top: 1px solid var(--line); }
+  .field:first-of-type { border-top: 0; }
+  .field label { font-weight: 600; }
+  .field .hint { grid-column: 1 / -1; font-size: .8rem; color: var(--muted); }
+  .field .bad { grid-column: 1 / -1; font-size: .8rem; color: var(--err); }
+  .field.disabled { opacity: .45; }
+  input, select { font: inherit; width: 100%; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--input); color: var(--text); }
+  input.invalid { border-color: var(--err); }
+  .unit { position: relative; }
+  .unit input { padding-right: 38px; }
+  .unit span { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: .85rem; }
+  .summary { font-size: .9rem; color: var(--muted); margin-top: 8px; }
+  .msg { font-size: .9rem; min-height: 1.4em; margin-top: 10px; }
+  .msg.ok { color: var(--ok); } .msg.err { color: var(--err); } .msg.warn { color: var(--warn); }
+  .notice { font-size: .85rem; color: var(--warn); }
+  @media (max-width: 420px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .field { grid-template-columns: 1fr 110px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>HPA-FCU 參數設定</h1>
+
+  <div class="card">
+    <div class="row">
+      <button id="btnConnect" class="primary">連線</button>
+      <button id="btnDisconnect" disabled>中斷</button>
+      <span id="conn" class="conn">未連線</span>
+    </div>
+    <p id="support" class="notice" hidden></p>
+  </div>
+
+  <div class="card">
+    <h2>狀態</h2>
+    <div class="stats">
+      <div class="stat"><div class="v" id="sVbat">–</div><div class="k">電池電壓 (V)</div></div>
+      <div class="stat"><div class="v" id="sShots">–</div><div class="k">射擊發數</div></div>
+      <div class="stat"><div class="v" id="sMode">–</div><div class="k">模式</div></div>
+      <div class="stat" id="faultBox"><div class="v" id="sFault">–</div><div class="k">故障</div></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button id="btnResetShots" disabled>發數清零</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>參數</h2>
+    <form id="form" novalidate>
+      <div class="field">
+        <label for="valves">電磁閥數量</label>
+        <select id="valves">
+          <option value="1">單閥</option>
+          <option value="2">雙閥</option>
+        </select>
+        <div class="hint">單閥：poppet 接閥 B（CN1 第 2 腳）。雙閥：nozzle 接閥 A（第 1 腳）、poppet 接閥 B。</div>
+      </div>
+      <div class="field">
+        <label for="poppet_open">Poppet 開閥時間</label>
+        <div class="unit"><input id="poppet_open" type="number" inputmode="decimal" step="0.1" min="1" max="100"><span>ms</span></div>
+        <div class="hint">1 ~ 100 ms</div>
+      </div>
+      <div class="field">
+        <label for="poppet_close">Poppet 閉閥時間</label>
+        <div class="unit"><input id="poppet_close" type="number" inputmode="decimal" step="0.1" min="1" max="200"><span>ms</span></div>
+        <div class="hint">1 ~ 200 ms，關閥後到下一發的最短等待</div>
+      </div>
+      <div class="field nozzle">
+        <label for="nozzle_open">Nozzle 開閥時間</label>
+        <div class="unit"><input id="nozzle_open" type="number" inputmode="decimal" step="0.1" min="1" max="100"><span>ms</span></div>
+        <div class="hint">1 ~ 100 ms，僅雙閥</div>
+      </div>
+      <div class="field nozzle">
+        <label for="nozzle_close">Nozzle 閉閥時間</label>
+        <div class="unit"><input id="nozzle_close" type="number" inputmode="decimal" step="0.1" min="0" max="200"><span>ms</span></div>
+        <div class="hint">0 ~ 200 ms，nozzle 關閉後到 poppet 開啟的等待，僅雙閥</div>
+      </div>
+      <div class="field">
+        <label for="rof">連發射速上限</label>
+        <div class="unit"><input id="rof" type="number" inputmode="numeric" step="1" min="1" max="60"><span>發/秒</span></div>
+        <div class="hint">1 ~ 60</div>
+      </div>
+      <p id="summary" class="summary"></p>
+      <div class="row">
+        <button id="btnWrite" type="submit" class="primary" disabled>寫入板子</button>
+        <button id="btnRead" type="button" disabled>重新讀取</button>
+        <button id="btnDefaults" type="button">填入預設值</button>
+      </div>
+      <p id="msg" class="msg"></p>
+    </form>
+  </div>
+</main>
+
+<script>
+// 與韌體 HpaFcu.ino 的 BLE 定義一致。
+const SERVICE = "8f1d0001-6b3a-4c8e-9a52-3e7c1f0a2b10";
+const SETTINGS = "8f1d0002-6b3a-4c8e-9a52-3e7c1f0a2b10";
+const STATUS = "8f1d0003-6b3a-4c8e-9a52-3e7c1f0a2b10";
+
+// 與韌體 HpaLogic.h 的範圍一致；韌體仍會再檢查一次。
+const FIELDS = {
+  poppet_open:  { min: 1, max: 100, label: "Poppet 開閥時間" },
+  poppet_close: { min: 1, max: 200, label: "Poppet 閉閥時間" },
+  nozzle_open:  { min: 1, max: 100, label: "Nozzle 開閥時間" },
+  nozzle_close: { min: 0, max: 200, label: "Nozzle 閉閥時間" },
+  rof:          { min: 1, max: 60, label: "連發射速上限", integer: true },
+};
+const DEFAULTS = { valves: 1, poppet_open: 10, poppet_close: 10, nozzle_open: 15, nozzle_close: 10, rof: 30 };
+
+const $ = (id) => document.getElementById(id);
+const enc = new TextEncoder(), dec = new TextDecoder();
+let device = null, settingsChar = null, statusChar = null, busy = false;
+
+function parseKv(text) {
+  const out = {};
+  for (const part of text.split(";")) {
+    const i = part.indexOf("=");
+    if (i > 0) out[part.slice(0, i).trim()] = part.slice(i + 1).trim();
+  }
+  return out;
+}
+
+function setMsg(text, kind = "") { const m = $("msg"); m.textContent = text; m.className = "msg " + kind; }
+
+function fillForm(values) {
+  $("valves").value = String(values.valves);
+  for (const k of Object.keys(FIELDS)) if (values[k] !== undefined) $(k).value = values[k];
+  refreshForm();
+}
+
+// 檢查單一欄位；時間最多 3 位小數，射速為整數。
+function checkField(k) {
+  const f = FIELDS[k], el = $(k), raw = el.value.trim();
+  let err = "";
+  if (raw === "") err = "請輸入數值";
+  else if (!/^\d+(\.\d{1,3})?$/.test(raw)) err = f.integer ? "須為整數" : "須為數字，最多 3 位小數";
+  else if (f.integer && raw.includes(".")) err = "須為整數";
+  else if (Number(raw) < f.min || Number(raw) > f.max) err = `須為 ${f.min} ~ ${f.max}`;
+  el.classList.toggle("invalid", !!err);
+  const field = el.closest(".field");
+  let bad = field.querySelector(".bad");
+  if (err) {
+    if (!bad) { bad = document.createElement("div"); bad.className = "bad"; field.appendChild(bad); }
+    bad.textContent = err;
+  } else if (bad) bad.remove();
+  return !err;
+}
+
+function refreshForm() {
+  const dual = $("valves").value === "2";
+  document.querySelectorAll(".field.nozzle").forEach((f) => {
+    f.classList.toggle("disabled", !dual);
+    f.querySelector("input").disabled = !dual;
+  });
+  let ok = true;
+  for (const k of Object.keys(FIELDS)) {
+    const inactive = !dual && k.startsWith("nozzle");
+    if (!inactive && !checkField(k)) ok = false;
+    if (inactive) { $(k).classList.remove("invalid"); const b = $(k).closest(".field").querySelector(".bad"); if (b) b.remove(); }
+  }
+  // 與韌體相同：一發時序總長限制最高射速。
+  if (ok) {
+    let seq = Number($("poppet_open").value) + Number($("poppet_close").value);
+    if (dual) seq += Number($("nozzle_open").value) + Number($("nozzle_close").value);
+    const bySeq = 1000 / seq, rof = Number($("rof").value);
+    const eff = Math.min(rof, bySeq);
+    $("summary").textContent = `一發時序 ${+seq.toFixed(3)} ms，時序最快 ${bySeq.toFixed(1)} 發/秒；連發實際約 ${eff.toFixed(1)} 發/秒` +
+      (bySeq < rof ? "（受時序限制）" : "（受射速上限限制）");
+  } else {
+    $("summary").textContent = "";
+  }
+  $("btnWrite").disabled = !ok || !settingsChar || busy;
+  return ok;
+}
+
+function buildCommand() {
+  const parts = [`valves=${$("valves").value}`];
+  for (const k of Object.keys(FIELDS)) parts.push(`${k}=${$(k).value.trim()}`);
+  return parts.join(";");
+}
+
+function showStatus(text) {
+  const s = parseKv(text);
+  $("sVbat").textContent = s.vbat === "na" ? "量測中" : (s.vbat ?? "–");
+  $("sShots").textContent = s.shots ?? "–";
+  $("sMode").textContent = s.mode === "auto" ? "連發" : s.mode === "semi" ? "單發" : "–";
+  const fault = s.fault === "1";
+  $("sFault").textContent = s.fault === undefined ? "–" : fault ? "有" : "無";
+  $("faultBox").classList.toggle("fault", fault);
+}
+
+async function readSettings() {
+  const v = await settingsChar.readValue();
+  return dec.decode(v);
+}
+
+// 韌體在主迴圈處理寫入，射擊中會延後；以回傳字串中的參數判斷是否已套用。
+async function sendCommand(cmd, expect) {
+  busy = true; refreshForm(); setButtons();
+  try {
+    // 先記下舊字串，避免把上一次寫入留下的 error 誤判為這次的結果。
+    const before = await readSettings();
+    await settingsChar.writeValueWithResponse(enc.encode(cmd));
+    for (let i = 0; i < 15; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      const text = await readSettings();
+      const kv = parseKv(text);
+      if (kv.error && text !== before) return { ok: false, error: kv.error, kv };
+      if (!expect || Object.entries(expect).every(([k, v]) => Number(kv[k]) === Number(v))) return { ok: true, kv };
+    }
+    return { ok: false, error: "板子沒有回應，可能正在射擊，請稍後重新讀取確認" };
+  } finally {
+    busy = false; refreshForm(); setButtons();
+  }
+}
+
+function setButtons() {
+  const on = !!settingsChar;
+  $("btnConnect").disabled = on || busy;
+  $("btnDisconnect").disabled = !on;
+  $("btnRead").disabled = !on || busy;
+  $("btnResetShots").disabled = !on || busy;
+}
+
+function setConnected(name) {
+  const c = $("conn");
+  c.textContent = name ? `已連線：${name}` : "未連線";
+  c.classList.toggle("on", !!name);
+  setButtons(); refreshForm();
+}
+
+async function connect() {
+  setMsg("");
+  try {
+    device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SERVICE] }] });
+    device.addEventListener("gattserverdisconnected", () => {
+      settingsChar = statusChar = null;
+      setConnected(null);
+      setMsg("連線已中斷", "warn");
+    });
+    $("conn").textContent = "連線中…";
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE);
+    settingsChar = await service.getCharacteristic(SETTINGS);
+    statusChar = await service.getCharacteristic(STATUS);
+    statusChar.addEventListener("characteristicvaluechanged", (e) => showStatus(dec.decode(e.target.value)));
+    await statusChar.startNotifications();
+    showStatus(dec.decode(await statusChar.readValue()));
+    const kv = parseKv(await readSettings());
+    fillForm(fromKv(kv));
+    setConnected(device.name || "HPA-FCU");
+    setMsg("已讀取板子目前的參數", "ok");
+  } catch (e) {
+    settingsChar = statusChar = null;
+    setConnected(null);
+    if (e.name !== "NotFoundError") setMsg("連線失敗：" + e.message, "err");
+    if (device && device.gatt.connected) device.gatt.disconnect();
+  }
+}
+
+function fromKv(kv) {
+  const v = { valves: Number(kv.valves) || 1 };
+  for (const k of Object.keys(FIELDS)) if (kv[k] !== undefined) v[k] = kv[k];
+  return v;
+}
+
+$("btnConnect").addEventListener("click", connect);
+$("btnDisconnect").addEventListener("click", () => { if (device && device.gatt.connected) device.gatt.disconnect(); });
+$("valves").addEventListener("change", refreshForm);
+for (const k of Object.keys(FIELDS)) $(k).addEventListener("input", refreshForm);
+$("btnDefaults").addEventListener("click", () => { fillForm(DEFAULTS); setMsg("已填入預設值，按「寫入板子」才會生效", "warn"); });
+
+$("btnRead").addEventListener("click", async () => {
+  try { fillForm(fromKv(parseKv(await readSettings()))); setMsg("已重新讀取", "ok"); }
+  catch (e) { setMsg("讀取失敗：" + e.message, "err"); }
+});
+
+$("form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  if (!refreshForm() || !settingsChar) return;
+  const cmd = buildCommand();
+  const expect = parseKv(cmd);
+  setMsg("寫入中…");
+  try {
+    const r = await sendCommand(cmd, expect);
+    if (r.ok) { fillForm(fromKv(r.kv)); setMsg("已寫入並保存", "ok"); }
+    else setMsg("寫入失敗：" + r.error, "err");
+  } catch (e) { setMsg("寫入失敗：" + e.message, "err"); }
+});
+
+$("btnResetShots").addEventListener("click", async () => {
+  try {
+    await settingsChar.writeValueWithResponse(enc.encode("shots=0"));
+    setMsg("已送出發數清零", "ok");
+  } catch (e) { setMsg("清零失敗：" + e.message, "err"); }
+});
+
+if (!("bluetooth" in navigator)) {
+  const s = $("support");
+  s.hidden = false;
+  s.textContent = window.isSecureContext
+    ? "這個瀏覽器不支援網頁藍牙。請用電腦或 Android 的 Chrome／Edge；iPhone 請改用 Bluefy 瀏覽器。"
+    : "網頁藍牙需要 https 或 localhost 開啟的網頁，目前的開啟方式不支援。";
+  $("btnConnect").disabled = true;
+}
+fillForm(DEFAULTS);
+setConnected(null);
+</script>
+</body>
+</html>
