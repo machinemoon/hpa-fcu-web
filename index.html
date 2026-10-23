@@ -157,7 +157,7 @@
       <div class="field">
         <label for="rof">射速上限</label>
         <div class="unit"><input id="rof" type="number" inputmode="numeric" step="1" min="1" max="60"><span>發/秒</span></div>
-        <div class="hint">1 ~ 60，限制連發、點放與雙動第二發的速度</div>
+        <div class="hint" id="rofHint">1 ~ 60，限制連發、點放與雙動第二發的速度</div>
       </div>
       <div class="field">
         <label for="lvp">低電壓保護</label>
@@ -227,6 +227,21 @@ function fillForm(values) {
   refreshForm();
 }
 
+// 一發時序總長（ms），任一時間欄位無效時回傳 null。
+function sequenceMs() {
+  const keys = ["poppet_open", "poppet_close"];
+  if ($("valves").value === "2") keys.push("nozzle_open", "nozzle_close");
+  if (keys.some((k) => fieldError(k))) return null;
+  return keys.reduce((sum, k) => sum + Number($(k).value), 0);
+}
+
+// 與韌體 maxRof 相同：1000 / 一發時序（無條件捨去），介於 1 ~ 60。
+function rofMax() {
+  const seq = sequenceMs();
+  if (seq === null || seq <= 0) return FIELDS.rof.max;
+  return Math.min(FIELDS.rof.max, Math.max(FIELDS.rof.min, Math.floor(1000 / seq + 1e-9)));
+}
+
 // 回傳欄位的錯誤訊息，空字串表示有效；時間最多 3 位小數，射速與發數為整數。
 function fieldError(k) {
   const f = FIELDS[k], raw = $(k).value.trim();
@@ -235,6 +250,7 @@ function fieldError(k) {
   if (f.integer && raw.includes(".")) return "須為整數";
   if (f.allowZero && Number(raw) === 0) return "";
   if (Number(raw) < f.min || Number(raw) > f.max) return f.allowZero ? `須為 0 或 ${f.min} ~ ${f.max}` : `須為 ${f.min} ~ ${f.max}`;
+  if (k === "rof" && Number(raw) > rofMax()) return `目前開閉閥時間最高只能 ${rofMax()} 發/秒`;
   return "";
 }
 
@@ -272,17 +288,13 @@ function refreshForm() {
     if (!inactive && !checkField(k)) ok = false;
     if (inactive) { $(k).classList.remove("invalid"); const b = $(k).closest(".field").querySelector(".bad"); if (b) b.remove(); }
   }
-  // 與韌體相同：一發時序總長限制最高射速。
-  if (ok) {
-    let seq = Number($("poppet_open").value) + Number($("poppet_close").value);
-    if (dual) seq += Number($("nozzle_open").value) + Number($("nozzle_close").value);
-    const bySeq = 1000 / seq, rof = Number($("rof").value);
-    const eff = Math.min(rof, bySeq);
-    $("summary").textContent = `一發時序 ${+seq.toFixed(3)} ms，時序最快 ${bySeq.toFixed(1)} 發/秒；連發實際約 ${eff.toFixed(1)} 發/秒` +
-      (bySeq < rof ? "（受時序限制）" : "（受射速上限限制）");
-  } else {
-    $("summary").textContent = "";
-  }
+  // 與韌體相同：射速上限不可超過一發時序允許的速度。
+  const max = rofMax(), seq = sequenceMs();
+  $("rof").max = String(max);
+  $("rofHint").textContent = `1 ~ ${max}（依目前開閉閥時間），限制連發、點放與雙動第二發的速度`;
+  $("summary").textContent = ok && seq !== null
+    ? `一發時序 ${+seq.toFixed(3)} ms，射速最高可設 ${max} 發/秒；目前設定 ${Number($("rof").value)} 發/秒`
+    : "";
   $("btnWrite").disabled = !ok || !settingsChar || busy;
   return ok;
 }
