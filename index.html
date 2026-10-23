@@ -98,6 +98,14 @@
         <div class="hint">單閥：poppet 接閥 B（CN1 第 2 腳）。雙閥：nozzle 接閥 A（第 1 腳）、poppet 接閥 B。</div>
       </div>
       <div class="field">
+        <label for="boost">閥門供電</label>
+        <select id="boost">
+          <option value="1">升壓 約 24V</option>
+          <option value="0">電池電壓</option>
+        </select>
+        <div class="hint">升壓：OUT 約 24V，請確認閥門耐壓。電池電壓：約電池電壓減 0.4V。切換會在沒有射擊、扳機放開時生效，開啟升壓後約 0.1 秒才能射擊。</div>
+      </div>
+      <div class="field">
         <label for="poppet_open">Poppet 開閥時間</label>
         <div class="unit"><input id="poppet_open" type="number" inputmode="decimal" step="0.1" min="1" max="100"><span>ms</span></div>
         <div class="hint">1 ~ 100 ms</div>
@@ -147,7 +155,7 @@ const FIELDS = {
   nozzle_close: { min: 0, max: 200, label: "Nozzle 閉閥時間" },
   rof:          { min: 1, max: 60, label: "連發射速上限", integer: true },
 };
-const DEFAULTS = { valves: 1, poppet_open: 10, poppet_close: 10, nozzle_open: 15, nozzle_close: 10, rof: 30 };
+const DEFAULTS = { valves: 1, boost: 1, poppet_open: 10, poppet_close: 10, nozzle_open: 15, nozzle_close: 10, rof: 30 };
 
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -166,6 +174,7 @@ function setMsg(text, kind = "") { const m = $("msg"); m.textContent = text; m.c
 
 function fillForm(values) {
   $("valves").value = String(values.valves);
+  $("boost").value = String(values.boost);
   for (const k of Object.keys(FIELDS)) if (values[k] !== undefined) $(k).value = values[k];
   refreshForm();
 }
@@ -216,7 +225,7 @@ function refreshForm() {
 }
 
 function buildCommand() {
-  const parts = [`valves=${$("valves").value}`];
+  const parts = [`valves=${$("valves").value}`, `boost=${$("boost").value}`];
   for (const k of Object.keys(FIELDS)) parts.push(`${k}=${$(k).value.trim()}`);
   return parts.join(";");
 }
@@ -301,7 +310,8 @@ async function connect() {
 }
 
 function fromKv(kv) {
-  const v = { valves: Number(kv.valves) || 1 };
+  // 舊版韌體沒有 boost 欄位時，視為升壓（舊版固定開啟升壓）。
+  const v = { valves: Number(kv.valves) || 1, boost: kv.boost === "0" ? 0 : 1 };
   for (const k of Object.keys(FIELDS)) if (kv[k] !== undefined) v[k] = kv[k];
   return v;
 }
