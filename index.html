@@ -18,12 +18,17 @@
     }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
+  body { margin: 0; background: #1b1d21; color: var(--text);
     font: 16px/1.5 system-ui, -apple-system, "Segoe UI", "Noto Sans TC", sans-serif; }
-  main { max-width: 560px; margin: 0 auto; padding: 16px; }
-  h1 { font-size: 1.3rem; margin: 4px 0 12px; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
-    padding: 16px; margin-bottom: 14px; }
+  /* 背景圖固定在畫面上；用獨立圖層而非 background-attachment: fixed，iPhone 瀏覽器才會固定。 */
+  body::before { content: ""; position: fixed; inset: 0; z-index: -1;
+    background: linear-gradient(rgba(0, 0, 0, .35), rgba(0, 0, 0, .35)), url("bg.jpg") center / cover no-repeat, #1b1d21; }
+  main { max-width: 560px; margin: 0 auto; padding: 16px; position: relative; }
+  h1 { font-size: 1.3rem; margin: 4px 0 12px; color: #ffffff; text-shadow: 0 1px 4px rgba(0, 0, 0, .8); }
+  /* 卡片半透明並模糊背後的圖，讓背景透出但文字仍清楚；不支援 color-mix 的瀏覽器用不透明底色。 */
+  .card { background: var(--card); background: color-mix(in srgb, var(--card) 72%, transparent);
+    -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
+    border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
   .card h2 { font-size: 1rem; margin: 0 0 12px; color: var(--muted); font-weight: 600; }
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--text);
