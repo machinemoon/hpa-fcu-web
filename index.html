@@ -60,6 +60,20 @@
   .msg { font-size: .9rem; min-height: 1.4em; margin-top: 10px; }
   .msg.ok { color: var(--ok); } .msg.err { color: var(--err); } .msg.warn { color: var(--warn); }
   .notice { font-size: .85rem; color: var(--warn); }
+  [hidden] { display: none !important; }
+  /* 板子識別：目前連線的板子名稱與編號。 */
+  .board-id { margin: 0 0 12px; padding: 10px 12px; border: 2px solid var(--accent); border-radius: 10px; }
+  .board-id .nm { font-size: 1.3rem; font-weight: 700; overflow-wrap: anywhere; }
+  .board-id .id { font-size: .9rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .nick-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+  .count { font-size: .8rem; color: var(--muted); margin-top: 4px; }
+  .recent { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  .recent li { display: grid; grid-template-columns: 1fr auto; gap: 6px; }
+  .recent .pick { text-align: left; display: flex; flex-direction: column; align-items: flex-start; gap: 0; overflow-wrap: anywhere; }
+  .recent .pick small { color: var(--muted); }
+  .tpl-info { font-size: .85rem; color: var(--muted); margin: 10px 0 0; }
+  .check { display: flex; align-items: center; gap: 8px; font-size: .9rem; margin-top: 10px; }
+  .check input { width: auto; }
   @media (max-width: 420px) {
     .field { grid-template-columns: 1fr 110px; }
   }
@@ -76,6 +90,33 @@
       <span id="conn" class="conn">未連線</span>
     </div>
     <p id="support" class="notice" hidden></p>
+  </div>
+
+  <div class="card" id="recentCard" hidden>
+    <h2>最近使用的板子</h2>
+    <ul class="recent" id="recent"></ul>
+    <p class="tpl-info">點板子名稱連線：選擇視窗只會列出那一片，不會混在其他板子裡。</p>
+  </div>
+
+  <div class="card" id="boardCard" hidden>
+    <h2>目前連線的板子</h2>
+    <div class="board-id">
+      <div class="nm" id="bName">–</div>
+      <div class="id" id="bId">–</div>
+    </div>
+    <div class="row">
+      <button id="btnIdentify" type="button" disabled>識別（板上 LED 閃爍）</button>
+    </div>
+    <div class="field" style="grid-template-columns: 1fr; border-top: 0; padding-bottom: 0">
+      <label for="nick">板子暱稱</label>
+      <div class="nick-row">
+        <input id="nick" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="例如 GBL-03、主槍">
+        <button id="btnNick" type="button" class="primary" disabled>儲存名稱</button>
+      </div>
+      <div class="count" id="nickCount">0 / 16 位元組</div>
+      <div class="hint">最多 16 位元組（英數字 1 位元組、中文 3 位元組，約 5 個字）。不可包含 ; , = 。留白會恢復成「HPA-FCU (編號)」。存好後，手機重新掃描會看到「HPA 暱稱 (編號)」。</div>
+    </div>
+    <p id="nickMsg" class="msg"></p>
   </div>
 
   <div class="card">
@@ -175,6 +216,12 @@
         <button id="btnRead" type="button" disabled>重新讀取</button>
         <button id="btnDefaults" type="button">填入預設值</button>
       </div>
+      <label class="check"><input type="checkbox" id="confirmWrite" checked>寫入前確認板子名稱（避免寫到別片）</label>
+      <div class="row" style="margin-top:12px">
+        <button id="btnSaveTpl" type="button">儲存為範本</button>
+        <button id="btnApplyTpl" type="button" disabled>套用範本</button>
+      </div>
+      <p class="tpl-info" id="tplInfo">尚無範本。成功寫入一片板子後會自動存成範本，連到下一片時按「套用範本」就能帶入同一組參數。</p>
       <p id="msg" class="msg"></p>
     </form>
   </div>
@@ -204,6 +251,91 @@ const MODE_NAMES = { semi: "單發", auto: "連發", binary: "雙動", burst: "�
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder(), dec = new TextDecoder();
 let device = null, settingsChar = null, statusChar = null, busy = false;
+
+// ===== 多片板子：識別、最近使用、範本 =====
+// 韌體提供 id（晶片 MAC 算出的 4 碼編號）與 name（暱稱）；舊版韌體沒有這兩項。
+const NICK_MAX_BYTES = 16;
+const BOARDS_KEY = "hpa.boards", TEMPLATE_KEY = "hpa.template", CONFIRM_KEY = "hpa.confirm";
+let board = null;  // { id, name }
+let identifying = false;  // 識別閃燈進行中，期間停用按鈕
+
+// localStorage 在無痕視窗或被封鎖時可能拋錯，一律包起來，沒有它頁面照常運作。
+const store = {
+  get(key, fallback) {
+    try { const v = localStorage.getItem(key); return v === null ? fallback : JSON.parse(v); } catch { return fallback; }
+  },
+  set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* 忽略 */ } },
+};
+
+const boardTitle = (b) => (b.name ? b.name : "未命名");
+const boardFull = (b) => (b.id ? `${boardTitle(b)} · ${b.id}` : "舊版韌體（無編號）");
+// 與韌體 advName 相同：手機掃描時看到的廣播名稱。
+const advName = (b) => (b.name ? `HPA ${b.name} (${b.id})` : `HPA-FCU (${b.id})`);
+const stamp = (t) => { const d = new Date(t), p = (n) => String(n).padStart(2, "0"); return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
+
+function setNickMsg(text, kind = "") { const m = $("nickMsg"); m.textContent = text; m.className = "msg " + kind; }
+
+function showBoard(b) {
+  board = b;
+  $("boardCard").hidden = !b;
+  if (!b) return;
+  $("bName").textContent = b.id ? boardTitle(b) : "舊版韌體";
+  $("bId").textContent = b.id ? `編號 ${b.id}　廣播名稱 ${advName(b)}` : "這片板子的韌體沒有編號與暱稱功能，請燒錄新版韌體。";
+  $("nick").value = b.name;
+  updateNickCount();
+  setButtons();
+}
+
+function nickBytes() { return enc.encode($("nick").value.trim()).length; }
+function updateNickCount() {
+  const n = nickBytes();
+  $("nickCount").textContent = `${n} / ${NICK_MAX_BYTES} 位元組`;
+  $("nickCount").style.color = n > NICK_MAX_BYTES ? "var(--err)" : "";
+}
+
+function renderRecent() {
+  const list = store.get(BOARDS_KEY, []);
+  $("recentCard").hidden = list.length === 0;
+  const ul = $("recent");
+  ul.textContent = "";
+  for (const b of list) {
+    const li = document.createElement("li");
+    const pick = document.createElement("button");
+    pick.type = "button"; pick.className = "pick";
+    const title = document.createElement("span");
+    title.textContent = `${boardTitle(b)} · ${b.id}`;
+    const small = document.createElement("small");
+    small.textContent = `上次連線 ${stamp(b.seen)}`;
+    pick.append(title, small);
+    pick.addEventListener("click", () => connect(b));
+    const del = document.createElement("button");
+    del.type = "button"; del.textContent = "移除"; del.title = "從清單移除（不影響板子）";
+    del.addEventListener("click", () => { store.set(BOARDS_KEY, store.get(BOARDS_KEY, []).filter((x) => x.id !== b.id)); renderRecent(); });
+    li.append(pick, del);
+    ul.append(li);
+  }
+}
+
+function rememberBoard(b) {
+  if (!b.id) return;
+  const list = store.get(BOARDS_KEY, []).filter((x) => x.id !== b.id);
+  list.unshift({ id: b.id, name: b.name, seen: Date.now() });
+  store.set(BOARDS_KEY, list.slice(0, 30));
+  renderRecent();
+}
+
+function renderTemplate() {
+  const t = store.get(TEMPLATE_KEY, null);
+  $("btnApplyTpl").disabled = !t;
+  $("tplInfo").textContent = t
+    ? `範本：來自 ${t.from}（${stamp(t.savedAt)}）。成功寫入一片板子後會自動更新範本。`
+    : "尚無範本。成功寫入一片板子後會自動存成範本，連到下一片時按「套用範本」就能帶入同一組參數。";
+}
+
+function saveTemplate(values) {
+  store.set(TEMPLATE_KEY, { from: board ? boardFull(board) : "未連線", savedAt: Date.now(), values });
+  renderTemplate();
+}
 
 function parseKv(text) {
   const out = {};
@@ -365,6 +497,9 @@ function setButtons() {
   $("btnDisconnect").disabled = !on;
   $("btnRead").disabled = !on || busy;
   $("btnResetShots").disabled = !on || busy;
+  const named = on && !!board && !!board.id;  // 舊版韌體沒有編號，不能改名或識別
+  $("btnNick").disabled = !named || busy;
+  $("btnIdentify").disabled = !named || busy || identifying;
 }
 
 function setConnected(name) {
@@ -374,12 +509,16 @@ function setConnected(name) {
   setButtons(); refreshForm();
 }
 
-async function connect() {
+// entry：最近使用清單中的板子；有的話連線視窗只列出那一片（依廣播名稱篩選），沒有則列出所有 HPA 板子。
+async function connect(entry) {
   setMsg("");
   try {
-    device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SERVICE] }] });
+    device = await navigator.bluetooth.requestDevice(entry && entry.id
+      ? { filters: [{ name: advName(entry) }], optionalServices: [SERVICE] }
+      : { filters: [{ services: [SERVICE] }] });
     device.addEventListener("gattserverdisconnected", () => {
       settingsChar = statusChar = null;
+      showBoard(null);
       setConnected(null);
       setMsg("連線已中斷", "warn");
     });
@@ -393,12 +532,20 @@ async function connect() {
     showStatus(dec.decode(await statusChar.readValue()));
     const kv = parseKv(await readSettings());
     fillForm(fromKv(kv));
-    setConnected(device.name || "HPA-FCU");
-    setMsg("已讀取板子目前的參數", "ok");
+    const b = { id: kv.id ?? "", name: kv.name ?? "" };
+    showBoard(b);
+    rememberBoard(b);
+    setConnected(b.id ? advName(b) : (device.name || "HPA-FCU"));
+    setMsg(`已讀取「${boardFull(b)}」目前的參數`, "ok");
   } catch (e) {
     settingsChar = statusChar = null;
+    showBoard(null);
     setConnected(null);
-    if (e.name !== "NotFoundError") setMsg("連線失敗：" + e.message, "err");
+    if (e.name === "NotFoundError") {
+      if (entry) setMsg(`沒有連上「${boardFull(entry)}」：可能沒開機、距離太遠、名稱已被改過，或你取消了選擇。可改按上方「連線」從清單挑選。`, "warn");
+    } else {
+      setMsg("連線失敗：" + e.message, "err");
+    }
     if (device && device.gatt.connected) device.gatt.disconnect();
   }
 }
@@ -411,7 +558,7 @@ function fromKv(kv) {
   return v;
 }
 
-$("btnConnect").addEventListener("click", connect);
+$("btnConnect").addEventListener("click", () => connect());
 $("btnDisconnect").addEventListener("click", () => { if (device && device.gatt.connected) device.gatt.disconnect(); });
 for (const id of ["valves", "mode1", "mode2"]) $(id).addEventListener("change", refreshForm);
 for (const k of Object.keys(FIELDS)) $(k).addEventListener("input", refreshForm);
@@ -425,14 +572,68 @@ $("btnRead").addEventListener("click", async () => {
 $("form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   if (!refreshForm() || !settingsChar) return;
+  // 多片板子放在一起時最怕寫錯片：寫入前顯示目前連線的是哪一片。
+  if ($("confirmWrite").checked && board && !window.confirm(`要把這組參數寫入「${boardFull(board)}」嗎？`)) {
+    setMsg("已取消寫入", "warn");
+    return;
+  }
   const cmd = buildCommand();
   const expect = parseKv(cmd);
   setMsg("寫入中…");
   try {
     const r = await sendCommand(cmd, expect);
-    if (r.ok) { fillForm(fromKv(r.kv)); setMsg("已寫入並保存", "ok"); }
-    else setMsg("寫入失敗：" + r.error, "err");
+    if (r.ok) {
+      const values = fromKv(r.kv);
+      fillForm(values);
+      saveTemplate(values);
+      setMsg(`已寫入「${board ? boardFull(board) : "板子"}」並保存，也已存成範本`, "ok");
+    } else setMsg("寫入失敗：" + r.error, "err");
   } catch (e) { setMsg("寫入失敗：" + e.message, "err"); }
+});
+
+$("btnSaveTpl").addEventListener("click", () => {
+  if (!refreshForm()) { setMsg("表單有錯誤，修正後才能存成範本", "err"); return; }
+  const values = { valves: Number($("valves").value), boost: Number($("boost").value), mode1: $("mode1").value, mode2: $("mode2").value };
+  for (const k of Object.keys(FIELDS)) values[k] = $(k).value.trim();
+  saveTemplate(values);
+  setMsg("已把目前表單存成範本", "ok");
+});
+
+$("btnApplyTpl").addEventListener("click", () => {
+  const t = store.get(TEMPLATE_KEY, null);
+  if (!t) return;
+  fillForm(t.values);
+  setMsg(`已套用範本（來自 ${t.from}），按「寫入板子」才會生效`, "warn");
+});
+
+$("confirmWrite").checked = store.get(CONFIRM_KEY, true) !== false;
+$("confirmWrite").addEventListener("change", () => store.set(CONFIRM_KEY, $("confirmWrite").checked));
+
+$("nick").addEventListener("input", updateNickCount);
+$("btnNick").addEventListener("click", async () => {
+  const name = $("nick").value.trim();
+  const bytes = enc.encode(name).length;
+  if (bytes > NICK_MAX_BYTES) { setNickMsg(`名稱太長：${bytes} 位元組，上限 ${NICK_MAX_BYTES}（英數字 1 位元組、中文 3 位元組）`, "err"); return; }
+  if (/[;,=\u0000-\u001f\u007f]/.test(name)) { setNickMsg("名稱不可包含 ; , = 與控制字元", "err"); return; }
+  setNickMsg("儲存中…");
+  try {
+    const r = await sendCommand(`name=${name}`, { name });
+    if (!r.ok) { setNickMsg("儲存失敗：" + r.error, "err"); return; }
+    const b = { id: r.kv.id ?? board.id, name: r.kv.name ?? name };
+    showBoard(b);
+    rememberBoard(b);
+    setConnected(advName(b));
+    setNickMsg(`已儲存。手機重新掃描會看到「${advName(b)}」`, "ok");
+  } catch (e) { setNickMsg("儲存失敗：" + e.message, "err"); }
+});
+
+$("btnIdentify").addEventListener("click", async () => {
+  try {
+    await settingsChar.writeValueWithResponse(enc.encode("identify=1"));
+    identifying = true; setButtons();
+    setNickMsg("板子上的 LED 會閃爍約 6 秒，找一下是哪一片。", "ok");
+    setTimeout(() => { identifying = false; setButtons(); }, 6000);
+  } catch (e) { setNickMsg("識別失敗：" + e.message, "err"); }
 });
 
 $("btnResetShots").addEventListener("click", async () => {
@@ -452,6 +653,8 @@ if (!("bluetooth" in navigator)) {
 }
 fillForm(DEFAULTS);
 setConnected(null);
+renderRecent();
+renderTemplate();
 </script>
 </body>
 </html>
