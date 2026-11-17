@@ -67,11 +67,6 @@
   .board-id .id { font-size: .9rem; color: var(--muted); font-variant-numeric: tabular-nums; }
   .nick-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
   .count { font-size: .8rem; color: var(--muted); margin-top: 4px; }
-  .recent { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-  .recent li { display: grid; grid-template-columns: 1fr auto; gap: 6px; }
-  .recent .pick { text-align: left; display: flex; flex-direction: column; align-items: flex-start; gap: 0; overflow-wrap: anywhere; }
-  .recent .pick small { color: var(--muted); }
-  .tpl-info { font-size: .85rem; color: var(--muted); margin: 10px 0 0; }
   .check { display: flex; align-items: center; gap: 8px; font-size: .9rem; margin-top: 10px; }
   .check input { width: auto; }
   @media (max-width: 420px) {
@@ -92,12 +87,6 @@
     <p id="support" class="notice" hidden></p>
   </div>
 
-  <div class="card" id="recentCard" hidden>
-    <h2>最近使用的板子</h2>
-    <ul class="recent" id="recent"></ul>
-    <p class="tpl-info">點板子名稱連線：選擇視窗只會列出那一片，不會混在其他板子裡。</p>
-  </div>
-
   <div class="card" id="boardCard" hidden>
     <h2>目前連線的板子</h2>
     <div class="board-id">
@@ -114,7 +103,7 @@
         <button id="btnNick" type="button" class="primary" disabled>儲存名稱</button>
       </div>
       <div class="count" id="nickCount">0 / 16 位元組</div>
-      <div class="hint">最多 16 位元組（英數字 1 位元組、中文 3 位元組，約 5 個字）。不可包含 ; , = 。留白會恢復成「HPA-FCU (編號)」。存好後，手機重新掃描會看到「HPA 暱稱 (編號)」。</div>
+      <div class="hint">只能用英文字母、數字、中文、減號 - 與底線 _，不可有空格或其他符號；最多 16 位元組（英數字 1 位元組、中文 3 位元組，約 5 個字）。藍牙名稱就是這個暱稱；留白會恢復成「HPA-編號」。</div>
     </div>
     <p id="nickMsg" class="msg"></p>
   </div>
@@ -217,11 +206,6 @@
         <button id="btnDefaults" type="button">填入預設值</button>
       </div>
       <label class="check"><input type="checkbox" id="confirmWrite" checked>寫入前確認板子名稱（避免寫到別片）</label>
-      <div class="row" style="margin-top:12px">
-        <button id="btnSaveTpl" type="button">儲存為範本</button>
-        <button id="btnApplyTpl" type="button" disabled>套用範本</button>
-      </div>
-      <p class="tpl-info" id="tplInfo">尚無範本。成功寫入一片板子後會自動存成範本，連到下一片時按「套用範本」就能帶入同一組參數。</p>
       <p id="msg" class="msg"></p>
     </form>
   </div>
@@ -252,10 +236,12 @@ const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder(), dec = new TextDecoder();
 let device = null, settingsChar = null, statusChar = null, busy = false;
 
-// ===== 多片板子：識別、最近使用、範本 =====
+// ===== 多片板子：識別 =====
 // 韌體提供 id（晶片 MAC 算出的 4 碼編號）與 name（暱稱）；舊版韌體沒有這兩項。
 const NICK_MAX_BYTES = 16;
-const BOARDS_KEY = "hpa.boards", TEMPLATE_KEY = "hpa.template", CONFIRM_KEY = "hpa.confirm";
+const CONFIRM_KEY = "hpa.confirm";
+// 與韌體 validNickname 相同：英文字母、數字、中文（U+4E00～U+9FFF）、- 與 _。
+const NICK_PATTERN = /^[A-Za-z0-9_\-\u4e00-\u9fff]*$/;
 let board = null;  // { id, name }
 let identifying = false;  // 識別閃燈進行中，期間停用按鈕
 
@@ -269,9 +255,8 @@ const store = {
 
 const boardTitle = (b) => (b.name ? b.name : "未命名");
 const boardFull = (b) => (b.id ? `${boardTitle(b)} · ${b.id}` : "舊版韌體（無編號）");
-// 與韌體 advName 相同：手機掃描時看到的廣播名稱。
-const advName = (b) => (b.name ? `HPA ${b.name} (${b.id})` : `HPA-FCU (${b.id})`);
-const stamp = (t) => { const d = new Date(t), p = (n) => String(n).padStart(2, "0"); return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
+// 與韌體 advName 相同：手機掃描時看到的藍牙名稱。有暱稱就是暱稱本身，否則 HPA-編號。
+const advName = (b) => (b.name ? b.name : `HPA-${b.id}`);
 
 function setNickMsg(text, kind = "") { const m = $("nickMsg"); m.textContent = text; m.className = "msg " + kind; }
 
@@ -280,7 +265,7 @@ function showBoard(b) {
   $("boardCard").hidden = !b;
   if (!b) return;
   $("bName").textContent = b.id ? boardTitle(b) : "舊版韌體";
-  $("bId").textContent = b.id ? `編號 ${b.id}　廣播名稱 ${advName(b)}` : "這片板子的韌體沒有編號與暱稱功能，請燒錄新版韌體。";
+  $("bId").textContent = b.id ? `編號 ${b.id}　藍牙名稱 ${advName(b)}` : "這片板子的韌體沒有編號與暱稱功能，請燒錄新版韌體。";
   $("nick").value = b.name;
   updateNickCount();
   setButtons();
@@ -289,52 +274,9 @@ function showBoard(b) {
 function nickBytes() { return enc.encode($("nick").value.trim()).length; }
 function updateNickCount() {
   const n = nickBytes();
-  $("nickCount").textContent = `${n} / ${NICK_MAX_BYTES} 位元組`;
-  $("nickCount").style.color = n > NICK_MAX_BYTES ? "var(--err)" : "";
-}
-
-function renderRecent() {
-  const list = store.get(BOARDS_KEY, []);
-  $("recentCard").hidden = list.length === 0;
-  const ul = $("recent");
-  ul.textContent = "";
-  for (const b of list) {
-    const li = document.createElement("li");
-    const pick = document.createElement("button");
-    pick.type = "button"; pick.className = "pick";
-    const title = document.createElement("span");
-    title.textContent = `${boardTitle(b)} · ${b.id}`;
-    const small = document.createElement("small");
-    small.textContent = `上次連線 ${stamp(b.seen)}`;
-    pick.append(title, small);
-    pick.addEventListener("click", () => connect(b));
-    const del = document.createElement("button");
-    del.type = "button"; del.textContent = "移除"; del.title = "從清單移除（不影響板子）";
-    del.addEventListener("click", () => { store.set(BOARDS_KEY, store.get(BOARDS_KEY, []).filter((x) => x.id !== b.id)); renderRecent(); });
-    li.append(pick, del);
-    ul.append(li);
-  }
-}
-
-function rememberBoard(b) {
-  if (!b.id) return;
-  const list = store.get(BOARDS_KEY, []).filter((x) => x.id !== b.id);
-  list.unshift({ id: b.id, name: b.name, seen: Date.now() });
-  store.set(BOARDS_KEY, list.slice(0, 30));
-  renderRecent();
-}
-
-function renderTemplate() {
-  const t = store.get(TEMPLATE_KEY, null);
-  $("btnApplyTpl").disabled = !t;
-  $("tplInfo").textContent = t
-    ? `範本：來自 ${t.from}（${stamp(t.savedAt)}）。成功寫入一片板子後會自動更新範本。`
-    : "尚無範本。成功寫入一片板子後會自動存成範本，連到下一片時按「套用範本」就能帶入同一組參數。";
-}
-
-function saveTemplate(values) {
-  store.set(TEMPLATE_KEY, { from: board ? boardFull(board) : "未連線", savedAt: Date.now(), values });
-  renderTemplate();
+  const badChar = !NICK_PATTERN.test($("nick").value.trim());
+  $("nickCount").textContent = `${n} / ${NICK_MAX_BYTES} 位元組` + (badChar ? "　含不允許的字元" : "");
+  $("nickCount").style.color = n > NICK_MAX_BYTES || badChar ? "var(--err)" : "";
 }
 
 function parseKv(text) {
@@ -509,13 +451,10 @@ function setConnected(name) {
   setButtons(); refreshForm();
 }
 
-// entry：最近使用清單中的板子；有的話連線視窗只列出那一片（依廣播名稱篩選），沒有則列出所有 HPA 板子。
-async function connect(entry) {
+async function connect() {
   setMsg("");
   try {
-    device = await navigator.bluetooth.requestDevice(entry && entry.id
-      ? { filters: [{ name: advName(entry) }], optionalServices: [SERVICE] }
-      : { filters: [{ services: [SERVICE] }] });
+    device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SERVICE] }] });
     device.addEventListener("gattserverdisconnected", () => {
       settingsChar = statusChar = null;
       showBoard(null);
@@ -534,18 +473,13 @@ async function connect(entry) {
     fillForm(fromKv(kv));
     const b = { id: kv.id ?? "", name: kv.name ?? "" };
     showBoard(b);
-    rememberBoard(b);
     setConnected(b.id ? advName(b) : (device.name || "HPA-FCU"));
     setMsg(`已讀取「${boardFull(b)}」目前的參數`, "ok");
   } catch (e) {
     settingsChar = statusChar = null;
     showBoard(null);
     setConnected(null);
-    if (e.name === "NotFoundError") {
-      if (entry) setMsg(`沒有連上「${boardFull(entry)}」：可能沒開機、距離太遠、名稱已被改過，或你取消了選擇。可改按上方「連線」從清單挑選。`, "warn");
-    } else {
-      setMsg("連線失敗：" + e.message, "err");
-    }
+    if (e.name !== "NotFoundError") setMsg("連線失敗：" + e.message, "err");  // NotFoundError：取消了選擇
     if (device && device.gatt.connected) device.gatt.disconnect();
   }
 }
@@ -585,25 +519,9 @@ $("form").addEventListener("submit", async (ev) => {
     if (r.ok) {
       const values = fromKv(r.kv);
       fillForm(values);
-      saveTemplate(values);
-      setMsg(`已寫入「${board ? boardFull(board) : "板子"}」並保存，也已存成範本`, "ok");
+      setMsg(`已寫入「${board ? boardFull(board) : "板子"}」並保存`, "ok");
     } else setMsg("寫入失敗：" + r.error, "err");
   } catch (e) { setMsg("寫入失敗：" + e.message, "err"); }
-});
-
-$("btnSaveTpl").addEventListener("click", () => {
-  if (!refreshForm()) { setMsg("表單有錯誤，修正後才能存成範本", "err"); return; }
-  const values = { valves: Number($("valves").value), boost: Number($("boost").value), mode1: $("mode1").value, mode2: $("mode2").value };
-  for (const k of Object.keys(FIELDS)) values[k] = $(k).value.trim();
-  saveTemplate(values);
-  setMsg("已把目前表單存成範本", "ok");
-});
-
-$("btnApplyTpl").addEventListener("click", () => {
-  const t = store.get(TEMPLATE_KEY, null);
-  if (!t) return;
-  fillForm(t.values);
-  setMsg(`已套用範本（來自 ${t.from}），按「寫入板子」才會生效`, "warn");
 });
 
 $("confirmWrite").checked = store.get(CONFIRM_KEY, true) !== false;
@@ -614,14 +532,13 @@ $("btnNick").addEventListener("click", async () => {
   const name = $("nick").value.trim();
   const bytes = enc.encode(name).length;
   if (bytes > NICK_MAX_BYTES) { setNickMsg(`名稱太長：${bytes} 位元組，上限 ${NICK_MAX_BYTES}（英數字 1 位元組、中文 3 位元組）`, "err"); return; }
-  if (/[;,=\u0000-\u001f\u007f]/.test(name)) { setNickMsg("名稱不可包含 ; , = 與控制字元", "err"); return; }
+  if (!NICK_PATTERN.test(name)) { setNickMsg("名稱只能用英文字母、數字、中文、- 與 _，不可有空格或其他符號", "err"); return; }
   setNickMsg("儲存中…");
   try {
     const r = await sendCommand(`name=${name}`, { name });
     if (!r.ok) { setNickMsg("儲存失敗：" + r.error, "err"); return; }
     const b = { id: r.kv.id ?? board.id, name: r.kv.name ?? name };
     showBoard(b);
-    rememberBoard(b);
     setConnected(advName(b));
     setNickMsg(`已儲存。手機重新掃描會看到「${advName(b)}」`, "ok");
   } catch (e) { setNickMsg("儲存失敗：" + e.message, "err"); }
@@ -653,8 +570,6 @@ if (!("bluetooth" in navigator)) {
 }
 fillForm(DEFAULTS);
 setConnected(null);
-renderRecent();
-renderTemplate();
 </script>
 </body>
 </html>
