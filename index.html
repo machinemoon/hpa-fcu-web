@@ -491,10 +491,13 @@ async function sendCommand(cmd, expect) {
   }
 }
 
+let connecting = false;  // 連線流程進行中（含探索服務、讀取參數），此時可按「中斷」取消
+let cancelled = false;
+
 function setButtons() {
   const on = !!settingsChar;
-  $("btnConnect").disabled = on || busy;
-  $("btnDisconnect").disabled = !on;
+  $("btnConnect").disabled = on || busy || connecting;
+  $("btnDisconnect").disabled = !(on || connecting);
   $("btnRead").disabled = !on || busy;
   $("btnResetShots").disabled = !on || busy;
   const named = on && !!board && !!board.id;  // 舊版韌體沒有編號，不能改名或識別
@@ -509,28 +512,65 @@ function setConnected(name) {
   setButtons(); refreshForm();
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 連線的每一步最多等 ms 毫秒；逾時或失敗都帶上步驟名稱，畫面不會一直停在「連線中」而不知道卡在哪。
+function step(label, promise, ms = 20000) {
+  $("conn").textContent = `連線中：${label}…`;
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label}逾時（${ms / 1000} 秒）`)), ms);
+  });
+  return Promise.race([promise, timeout])
+    .catch((e) => { e.step = e.step || label; throw e; })
+    .finally(() => clearTimeout(timer));
+}
+
+const STEP_HINT = {
+  "建立連線": "板子可能正被別的裝置連著（電腦上的網頁、另一支手機），請先把那邊中斷；也可能距離太遠、板子沒開機。",
+  "探索服務": "手機可能還記著這片板子舊的藍牙資料。請把手機的藍牙關掉再打開，然後重試。",
+  "取得特徵值": "手機可能還記著這片板子舊的藍牙資料。請把手機的藍牙關掉再打開，然後重試。",
+  "訂閱狀態": "請按「中斷」後重新連線一次。",
+  "讀取狀態": "請按「中斷」後重新連線一次。",
+  "讀取參數": "請按「中斷」後重新連線一次。",
+};
+
 // entry：最近使用清單中的板子；有的話連線視窗只列出那一片（依廣播名稱篩選），沒有則列出所有 HPA 板子。
 async function connect(entry) {
+  if (connecting) return;
   setMsg("");
+  cancelled = false;
   try {
     device = await navigator.bluetooth.requestDevice(entry && entry.id
       ? { filters: [{ name: advName(entry) }], optionalServices: [SERVICE] }
       : { filters: [{ services: [SERVICE] }] });
+    connecting = true; setButtons();
     device.addEventListener("gattserverdisconnected", () => {
+      const wasConnected = !!settingsChar;  // 連線過程中被中斷時，錯誤訊息由 connect() 的 catch 負責
       settingsChar = statusChar = null;
       showBoard(null);
       setConnected(null);
-      setMsg("連線已中斷", "warn");
+      if (wasConnected) setMsg("連線已中斷", "warn");
     });
-    $("conn").textContent = "連線中…";
-    const server = await device.gatt.connect();
-    const service = await server.getPrimaryService(SERVICE);
-    settingsChar = await service.getCharacteristic(SETTINGS);
-    statusChar = await service.getCharacteristic(STATUS);
-    statusChar.addEventListener("characteristicvaluechanged", (e) => showStatus(dec.decode(e.target.value)));
-    await statusChar.startNotifications();
-    showStatus(dec.decode(await statusChar.readValue()));
-    const kv = parseKv(await readSettings());
+    // 手機第一次建立連線偶爾會失敗或卡住，自動重試一次。
+    let server = null;
+    for (let attempt = 1; !server; attempt++) {
+      try {
+        server = await step(attempt === 1 ? "建立連線" : "建立連線（重試）", device.gatt.connect(), 20000);
+      } catch (e) {
+        if (cancelled || attempt >= 2) throw e;
+        try { device.gatt.disconnect(); } catch { /* 忽略 */ }
+        await sleep(800);
+      }
+    }
+    const service = await step("探索服務", server.getPrimaryService(SERVICE), 20000);
+    const settings = await step("取得特徵值", service.getCharacteristic(SETTINGS), 15000);
+    const status = await step("取得特徵值", service.getCharacteristic(STATUS), 15000);
+    status.addEventListener("characteristicvaluechanged", (e) => showStatus(dec.decode(e.target.value)));
+    await step("訂閱狀態", status.startNotifications(), 15000);
+    showStatus(dec.decode(await step("讀取狀態", status.readValue(), 15000)));
+    settingsChar = settings; statusChar = status;
+    const kv = parseKv(dec.decode(await step("讀取參數", settings.readValue(), 15000)));
     fillForm(fromKv(kv));
     const b = { id: kv.id ?? "", name: kv.name ?? "" };
     showBoard(b);
@@ -543,10 +583,16 @@ async function connect(entry) {
     setConnected(null);
     if (e.name === "NotFoundError") {
       if (entry) setMsg(`沒有連上「${boardFull(entry)}」：可能沒開機、距離太遠、名稱已被改過，或你取消了選擇。可改按上方「連線」從清單挑選。`, "warn");
+    } else if (cancelled) {
+      setMsg("已取消連線", "warn");
     } else {
-      setMsg("連線失敗：" + e.message, "err");
+      const where = e.step ? `（停在「${e.step}」）` : "";
+      setMsg(`連線失敗${where}：${e.message}。${STEP_HINT[(e.step || "").replace("（重試）", "")] ?? ""}`, "err");
     }
     if (device && device.gatt.connected) device.gatt.disconnect();
+  } finally {
+    connecting = false;
+    setButtons();
   }
 }
 
@@ -559,7 +605,10 @@ function fromKv(kv) {
 }
 
 $("btnConnect").addEventListener("click", () => connect());
-$("btnDisconnect").addEventListener("click", () => { if (device && device.gatt.connected) device.gatt.disconnect(); });
+$("btnDisconnect").addEventListener("click", () => {
+  cancelled = connecting;  // 連線過程中按「中斷」＝取消
+  if (device && (device.gatt.connected || connecting)) device.gatt.disconnect();
+});
 for (const id of ["valves", "mode1", "mode2"]) $(id).addEventListener("change", refreshForm);
 for (const k of Object.keys(FIELDS)) $(k).addEventListener("input", refreshForm);
 $("btnDefaults").addEventListener("click", () => { fillForm(DEFAULTS); setMsg("已填入預設值，按「寫入板子」才會生效", "warn"); });
