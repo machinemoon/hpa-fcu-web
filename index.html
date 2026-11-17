@@ -228,10 +228,13 @@
 </main>
 
 <script>
-// 與韌體 HpaFcu.ino 的 BLE 定義一致。
-const SERVICE = "8f1d0001-6b3a-4c8e-9a52-3e7c1f0a2b10";
-const SETTINGS = "8f1d0002-6b3a-4c8e-9a52-3e7c1f0a2b10";
-const STATUS = "8f1d0003-6b3a-4c8e-9a52-3e7c1f0a2b10";
+// 與韌體 HpaFcu.ino 的 BLE 定義一致。新版韌體改用 16 位元 UUID（0xFFE0～0xFFE2）：iPhone 依服務 UUID
+// 探索時，128 位元 UUID 會卡在「建立連線」。仍保留舊版（128 位元）的設定，讓還沒重新燒錄的板子能繼續用。
+const PROFILES = [
+  { service: "0000ffe0-0000-1000-8000-00805f9b34fb", settings: "0000ffe1-0000-1000-8000-00805f9b34fb", status: "0000ffe2-0000-1000-8000-00805f9b34fb" },
+  { service: "8f1d0001-6b3a-4c8e-9a52-3e7c1f0a2b10", settings: "8f1d0002-6b3a-4c8e-9a52-3e7c1f0a2b10", status: "8f1d0003-6b3a-4c8e-9a52-3e7c1f0a2b10" },
+];
+const ALL_SERVICES = PROFILES.map((p) => p.service);
 
 // 與韌體 HpaLogic.h 的範圍一致；韌體仍會再檢查一次。
 const FIELDS = {
@@ -542,8 +545,8 @@ async function connect(entry) {
   cancelled = false;
   try {
     device = await navigator.bluetooth.requestDevice(entry && entry.id
-      ? { filters: [{ name: advName(entry) }], optionalServices: [SERVICE] }
-      : { filters: [{ services: [SERVICE] }] });
+      ? { filters: [{ name: advName(entry) }], optionalServices: ALL_SERVICES }
+      : { filters: ALL_SERVICES.map((s) => ({ services: [s] })) });
     connecting = true; setButtons();
     device.addEventListener("gattserverdisconnected", () => {
       const wasConnected = !!settingsChar;  // 連線過程中被中斷時，錯誤訊息由 connect() 的 catch 負責
@@ -563,9 +566,20 @@ async function connect(entry) {
         await sleep(800);
       }
     }
-    const service = await step("探索服務", server.getPrimaryService(SERVICE), 20000);
-    const settings = await step("取得特徵值", service.getCharacteristic(SETTINGS), 15000);
-    const status = await step("取得特徵值", service.getCharacteristic(STATUS), 15000);
+    // 先試新版（16 位元）UUID，板子沒有這個服務才改試舊版（128 位元）。
+    let service = null, profile = null;
+    for (const p of PROFILES) {
+      try {
+        service = await step("探索服務", server.getPrimaryService(p.service), 20000);
+        profile = p;
+        break;
+      } catch (e) {
+        if (e.name !== "NotFoundError") throw e;
+      }
+    }
+    if (!service) { const err = new Error("板子上找不到對應的服務"); err.step = "探索服務"; throw err; }
+    const settings = await step("取得特徵值", service.getCharacteristic(profile.settings), 15000);
+    const status = await step("取得特徵值", service.getCharacteristic(profile.status), 15000);
     status.addEventListener("characteristicvaluechanged", (e) => showStatus(dec.decode(e.target.value)));
     await step("訂閱狀態", status.startNotifications(), 15000);
     showStatus(dec.decode(await step("讀取狀態", status.readValue(), 15000)));
