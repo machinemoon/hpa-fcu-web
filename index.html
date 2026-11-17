@@ -114,7 +114,7 @@
         <button id="btnNick" type="button" class="primary" disabled>儲存名稱</button>
       </div>
       <div class="count" id="nickCount">0 / 16 位元組</div>
-      <div class="hint">最多 16 位元組（英數字 1 位元組、中文 3 位元組，約 5 個字），不可有空格與 ; , = 。存好後手機掃描看到的名稱就是暱稱；留白會恢復成「HPA-編號」。iPhone 可能要重新連上一次才會顯示新名稱。</div>
+      <div class="hint">最多 16 位元組（英數字 1 位元組、中文 3 位元組，約 5 個字）。不可包含 ; , = 。留白會恢復成「HPA-FCU (編號)」。存好後，手機重新掃描會看到「HPA 暱稱 (編號)」。</div>
     </div>
     <p id="nickMsg" class="msg"></p>
   </div>
@@ -228,13 +228,10 @@
 </main>
 
 <script>
-// 與韌體 HpaFcu.ino 的 BLE 定義一致。新版韌體改用 16 位元 UUID（0xFFE0～0xFFE2）：iPhone 依服務 UUID
-// 探索時，128 位元 UUID 會卡在「建立連線」。仍保留舊版（128 位元）的設定，讓還沒重新燒錄的板子能繼續用。
-const PROFILES = [
-  { service: "0000ffe0-0000-1000-8000-00805f9b34fb", settings: "0000ffe1-0000-1000-8000-00805f9b34fb", status: "0000ffe2-0000-1000-8000-00805f9b34fb" },
-  { service: "8f1d0001-6b3a-4c8e-9a52-3e7c1f0a2b10", settings: "8f1d0002-6b3a-4c8e-9a52-3e7c1f0a2b10", status: "8f1d0003-6b3a-4c8e-9a52-3e7c1f0a2b10" },
-];
-const ALL_SERVICES = PROFILES.map((p) => p.service);
+// 與韌體 HpaFcu.ino 的 BLE 定義一致。
+const SERVICE = "8f1d0001-6b3a-4c8e-9a52-3e7c1f0a2b10";
+const SETTINGS = "8f1d0002-6b3a-4c8e-9a52-3e7c1f0a2b10";
+const STATUS = "8f1d0003-6b3a-4c8e-9a52-3e7c1f0a2b10";
 
 // 與韌體 HpaLogic.h 的範圍一致；韌體仍會再檢查一次。
 const FIELDS = {
@@ -272,8 +269,8 @@ const store = {
 
 const boardTitle = (b) => (b.name ? b.name : "未命名");
 const boardFull = (b) => (b.id ? `${boardTitle(b)} · ${b.id}` : "舊版韌體（無編號）");
-// 與韌體 advName 相同：手機掃描時看到的廣播名稱。有暱稱就是暱稱本身，否則 HPA-編號。
-const advName = (b) => (b.name ? b.name : `HPA-${b.id}`);
+// 與韌體 advName 相同：手機掃描時看到的廣播名稱。
+const advName = (b) => (b.name ? `HPA ${b.name} (${b.id})` : `HPA-FCU (${b.id})`);
 const stamp = (t) => { const d = new Date(t), p = (n) => String(n).padStart(2, "0"); return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
 
 function setNickMsg(text, kind = "") { const m = $("nickMsg"); m.textContent = text; m.className = "msg " + kind; }
@@ -494,13 +491,10 @@ async function sendCommand(cmd, expect) {
   }
 }
 
-let connecting = false;  // 連線流程進行中（含探索服務、讀取參數），此時可按「中斷」取消
-let cancelled = false;
-
 function setButtons() {
   const on = !!settingsChar;
-  $("btnConnect").disabled = on || busy || connecting;
-  $("btnDisconnect").disabled = !(on || connecting);
+  $("btnConnect").disabled = on || busy;
+  $("btnDisconnect").disabled = !on;
   $("btnRead").disabled = !on || busy;
   $("btnResetShots").disabled = !on || busy;
   const named = on && !!board && !!board.id;  // 舊版韌體沒有編號，不能改名或識別
@@ -515,76 +509,28 @@ function setConnected(name) {
   setButtons(); refreshForm();
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// 連線的每一步最多等 ms 毫秒；逾時或失敗都帶上步驟名稱，畫面不會一直停在「連線中」而不知道卡在哪。
-function step(label, promise, ms = 20000) {
-  $("conn").textContent = `連線中：${label}…`;
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label}逾時（${ms / 1000} 秒）`)), ms);
-  });
-  return Promise.race([promise, timeout])
-    .catch((e) => { e.step = e.step || label; throw e; })
-    .finally(() => clearTimeout(timer));
-}
-
-const STEP_HINT = {
-  "建立連線": "板子可能正被別的裝置連著（電腦上的網頁、另一支手機），請先把那邊中斷；也可能距離太遠、板子沒開機。",
-  "探索服務": "手機可能還記著這片板子舊的藍牙資料。請把手機的藍牙關掉再打開，然後重試。",
-  "取得特徵值": "手機可能還記著這片板子舊的藍牙資料。請把手機的藍牙關掉再打開，然後重試。",
-  "訂閱狀態": "請按「中斷」後重新連線一次。",
-  "讀取狀態": "請按「中斷」後重新連線一次。",
-  "讀取參數": "請按「中斷」後重新連線一次。",
-};
-
 // entry：最近使用清單中的板子；有的話連線視窗只列出那一片（依廣播名稱篩選），沒有則列出所有 HPA 板子。
 async function connect(entry) {
-  if (connecting) return;
   setMsg("");
-  cancelled = false;
   try {
     device = await navigator.bluetooth.requestDevice(entry && entry.id
-      ? { filters: [{ name: advName(entry) }], optionalServices: ALL_SERVICES }
-      : { filters: ALL_SERVICES.map((s) => ({ services: [s] })) });
-    connecting = true; setButtons();
+      ? { filters: [{ name: advName(entry) }], optionalServices: [SERVICE] }
+      : { filters: [{ services: [SERVICE] }] });
     device.addEventListener("gattserverdisconnected", () => {
-      const wasConnected = !!settingsChar;  // 連線過程中被中斷時，錯誤訊息由 connect() 的 catch 負責
       settingsChar = statusChar = null;
       showBoard(null);
       setConnected(null);
-      if (wasConnected) setMsg("連線已中斷", "warn");
+      setMsg("連線已中斷", "warn");
     });
-    // 手機第一次建立連線偶爾會失敗或卡住，自動重試一次。
-    let server = null;
-    for (let attempt = 1; !server; attempt++) {
-      try {
-        server = await step(attempt === 1 ? "建立連線" : "建立連線（重試）", device.gatt.connect(), 20000);
-      } catch (e) {
-        if (cancelled || attempt >= 2) throw e;
-        try { device.gatt.disconnect(); } catch { /* 忽略 */ }
-        await sleep(800);
-      }
-    }
-    // 先試新版（16 位元）UUID，板子沒有這個服務才改試舊版（128 位元）。
-    let service = null, profile = null;
-    for (const p of PROFILES) {
-      try {
-        service = await step("探索服務", server.getPrimaryService(p.service), 20000);
-        profile = p;
-        break;
-      } catch (e) {
-        if (e.name !== "NotFoundError") throw e;
-      }
-    }
-    if (!service) { const err = new Error("板子上找不到對應的服務"); err.step = "探索服務"; throw err; }
-    const settings = await step("取得特徵值", service.getCharacteristic(profile.settings), 15000);
-    const status = await step("取得特徵值", service.getCharacteristic(profile.status), 15000);
-    status.addEventListener("characteristicvaluechanged", (e) => showStatus(dec.decode(e.target.value)));
-    await step("訂閱狀態", status.startNotifications(), 15000);
-    showStatus(dec.decode(await step("讀取狀態", status.readValue(), 15000)));
-    settingsChar = settings; statusChar = status;
-    const kv = parseKv(dec.decode(await step("讀取參數", settings.readValue(), 15000)));
+    $("conn").textContent = "連線中…";
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE);
+    settingsChar = await service.getCharacteristic(SETTINGS);
+    statusChar = await service.getCharacteristic(STATUS);
+    statusChar.addEventListener("characteristicvaluechanged", (e) => showStatus(dec.decode(e.target.value)));
+    await statusChar.startNotifications();
+    showStatus(dec.decode(await statusChar.readValue()));
+    const kv = parseKv(await readSettings());
     fillForm(fromKv(kv));
     const b = { id: kv.id ?? "", name: kv.name ?? "" };
     showBoard(b);
@@ -597,16 +543,10 @@ async function connect(entry) {
     setConnected(null);
     if (e.name === "NotFoundError") {
       if (entry) setMsg(`沒有連上「${boardFull(entry)}」：可能沒開機、距離太遠、名稱已被改過，或你取消了選擇。可改按上方「連線」從清單挑選。`, "warn");
-    } else if (cancelled) {
-      setMsg("已取消連線", "warn");
     } else {
-      const where = e.step ? `（停在「${e.step}」）` : "";
-      setMsg(`連線失敗${where}：${e.message}。${STEP_HINT[(e.step || "").replace("（重試）", "")] ?? ""}`, "err");
+      setMsg("連線失敗：" + e.message, "err");
     }
     if (device && device.gatt.connected) device.gatt.disconnect();
-  } finally {
-    connecting = false;
-    setButtons();
   }
 }
 
@@ -619,10 +559,7 @@ function fromKv(kv) {
 }
 
 $("btnConnect").addEventListener("click", () => connect());
-$("btnDisconnect").addEventListener("click", () => {
-  cancelled = connecting;  // 連線過程中按「中斷」＝取消
-  if (device && (device.gatt.connected || connecting)) device.gatt.disconnect();
-});
+$("btnDisconnect").addEventListener("click", () => { if (device && device.gatt.connected) device.gatt.disconnect(); });
 for (const id of ["valves", "mode1", "mode2"]) $(id).addEventListener("change", refreshForm);
 for (const k of Object.keys(FIELDS)) $(k).addEventListener("input", refreshForm);
 $("btnDefaults").addEventListener("click", () => { fillForm(DEFAULTS); setMsg("已填入預設值，按「寫入板子」才會生效", "warn"); });
@@ -677,7 +614,7 @@ $("btnNick").addEventListener("click", async () => {
   const name = $("nick").value.trim();
   const bytes = enc.encode(name).length;
   if (bytes > NICK_MAX_BYTES) { setNickMsg(`名稱太長：${bytes} 位元組，上限 ${NICK_MAX_BYTES}（英數字 1 位元組、中文 3 位元組）`, "err"); return; }
-  if (/[\s;,=\u0000-\u001f\u007f　]/.test(name)) { setNickMsg("名稱不可有空格、; , = 與控制字元", "err"); return; }
+  if (/[;,=\u0000-\u001f\u007f]/.test(name)) { setNickMsg("名稱不可包含 ; , = 與控制字元", "err"); return; }
   setNickMsg("儲存中…");
   try {
     const r = await sendCommand(`name=${name}`, { name });
